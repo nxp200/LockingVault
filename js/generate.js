@@ -1,0 +1,39 @@
+/* generate.js — passphrase and password generation.
+ * All randomness comes from crypto.getRandomValues with rejection
+ * sampling; a plain modulo would bias the low end of the wordlist
+ * and quietly cost entropy on every vault created.
+ */
+window.LV = window.LV || {};
+
+LV.generate = (function () {
+  const PW_ALPHABET =
+    'abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789!@#$%^&*-_=+?';
+
+  function secureIndex(max) {
+    const limit = 65536 - (65536 % max); // 65536 % 7776 = 3328 discarded
+    const buf = new Uint16Array(1);
+    let v;
+    do {
+      crypto.getRandomValues(buf);
+      v = buf[0];
+    } while (v >= limit);
+    return v % max;
+  }
+
+  // 6 words from the 7776-word EFF long list = 77.5 bits
+  function passphrase(wordCount) {
+    const n = wordCount || 6;
+    const out = [];
+    for (let i = 0; i < n; i++) out.push(LV.WORDS[secureIndex(LV.WORDS.length)]);
+    return out;
+  }
+
+  function password(length) {
+    const n = length || 20;
+    let out = '';
+    for (let i = 0; i < n; i++) out += PW_ALPHABET[secureIndex(PW_ALPHABET.length)];
+    return out;
+  }
+
+  return { secureIndex, passphrase, password };
+})();
