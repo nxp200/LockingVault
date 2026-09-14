@@ -20,9 +20,17 @@ LV.generate = (function () {
     return v % max;
   }
 
-  // 6 words from the 7776-word EFF long list = 77.5 bits
+  // Words drawn from the 7776-word EFF long list, so each one is
+  // log2(7776) = 12.925 bits. Eight words is 103.4 bits.
+  //
+  // This is the only security parameter that scales exponentially.
+  // Raising the Argon2 memory cost multiplies an attacker's cost by a
+  // constant; adding a word multiplies the search space by 7776. Change
+  // this rather than the KDF parameters if the threat model grows.
+  const WORD_COUNT = 8;
+
   function passphrase(wordCount) {
-    const n = wordCount || 6;
+    const n = wordCount || WORD_COUNT;
     const out = [];
     for (let i = 0; i < n; i++) out.push(LV.WORDS[secureIndex(LV.WORDS.length)]);
     return out;
@@ -35,5 +43,5 @@ LV.generate = (function () {
     return out;
   }
 
-  return { secureIndex, passphrase, password };
+  return { WORD_COUNT, secureIndex, passphrase, password };
 })();

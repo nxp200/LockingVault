@@ -133,92 +133,90 @@ ciphertext length.
 
 ---
 
-## 4. The Argon2 swap — the one critical outstanding change
+## 4. Key derivation — Argon2id (done, 2026-09-14)
 
-This is the thing that must happen before the app holds anything real.
+This was the one blocking item. It is now in.
 
-### What the problem is
+### Why it mattered
 
-Deriving the encryption key from a passphrase requires a **key derivation
-function (KDF)**. Its whole job is to be slow and expensive, so that an
-attacker who has stolen the vault file and is guessing passphrases offline
-gets very few attempts per second.
+The key is derived from the passphrase by a KDF, whose only job is to
+be slow, because an attacker holding the stolen file guesses offline
+with no rate limit. The app previously used **PBKDF2-SHA256 at 600,000
+iterations** as a labelled placeholder. PBKDF2 is slow in time but
+needs almost no memory, so a GPU runs tens of thousands of guesses in
+parallel and the attacker's advantage over a phone is enormous.
 
-The app currently uses **PBKDF2-SHA256 at 600,000 iterations**. PBKDF2 does
-one thing: run SHA-256 over and over. It is slow in *time* but needs almost
-no *memory*.
+**Argon2id** forces every guess to hold a large block of memory — 64
+MiB here — for its whole duration. A 16 GB card can then hold only a
+few hundred guesses at once. The cost shifts from cores, which are
+cheap, to memory, which is not.
 
-That is the weakness. A GPU has thousands of small cores, and since each
-PBKDF2 guess needs only a few hundred bytes, a single graphics card can run
-tens of thousands of guesses in parallel. Purpose-built ASIC hardware is
-worse still. The attacker's advantage over your phone is enormous.
+It was not in originally because WebCrypto does not provide Argon2 and
+the WASM build could not be fetched at the time.
 
-**Argon2id** is designed to remove that advantage. It deliberately requires
-a large block of memory — say 64 MiB — for *every single guess*. A GPU with
-16 GB of memory can therefore only run about 250 guesses at once instead of
-tens of thousands. The attacker now has to buy memory, not just cores, and
-memory is the expensive part. It won the Password Hashing Competition in
-2015 and is the current standard recommendation. ("id" is the hybrid
-variant, combining resistance to side-channel attacks and to GPU attacks.)
+### What was chosen and why
 
-**So why isn't it already in there?** Because WebCrypto — the browser's
-built-in `crypto.subtle` — provides PBKDF2 but does *not* provide Argon2 or
-scrypt. A browser app has to bring its own, compiled to WebAssembly. That
-WASM build could not be fetched while the app was being written, so PBKDF2
-went in as a clearly-labelled placeholder and the lock screen says so.
+**hash-wasm 4.12.0**, `dist/argon2.umd.min.js`, 29 KB, vendored at
+`vendor/hash-wasm-argon2.umd.min.js`.
 
-### What the swap actually involves
+It ships the `.wasm` inlined as base64 and makes no `fetch`, `XHR` or
+`require` call at runtime. That is the deciding property: anything that
+loads its `.wasm` as a separate file is blocked by CORS over `file://`,
+which would have meant running a server to open your own vault. It is
+also actively maintained, which `argon2-browser` (last release 2021) is
+not.
 
-The code is already structured for it. `js/crypto.js` opens with:
+`js/argon2.js` adapts it to the `window.argon2.hash({ pass, salt, time,
+mem, parallelism, hashLen, type })` shape `crypto.js` already expected,
+so **`js/crypto.js` was not modified at all**. Swapping the vendor
+library later is a change to the adapter alone.
 
-```js
-const HAS_ARGON2 = typeof window.argon2 !== 'undefined';
+Load order in `index.html` is vendor, adapter, then `js/crypto.js`,
+which reads `window.argon2` at load time.
 
-const DEFAULT_PARAMS = HAS_ARGON2
-  ? { kdf: F.KDF_ARGON2ID, memoryKiB: 65536, iterations: 3, parallelism: 1 }
-  : { kdf: F.KDF_PBKDF2,   memoryKiB: 0,     iterations: 600000, parallelism: 1 };
-```
+### Parameters
 
-So the steps are:
+m = 64 MiB, t = 3, p = 1, 32-byte output — the existing
+`DEFAULT_PARAMS`, unchanged. Measured at **~117 ms per derivation** on
+Nam's Mac. That is well under the ~1 s target, but the Mac is not the
+constraint: a mid-range Android phone in a browser will be several
+times slower and is where this has to be timed. **Not yet measured on a
+phone.** If it has to come down there, reduce iterations and leave
+memory alone — memory is what removes the GPU advantage.
 
-1. **Get an audited Argon2 WASM build.** `argon2-browser` and `hash-wasm`
-   are the usual candidates. Check it is maintained and has had eyes on it
-   — this is the component protecting everything else.
-2. **Load it before `js/crypto.js`** in `index.html`. For the single-file
-   bundle, inline the `.wasm` as base64 so `dist/lockingvault.html` stays
-   one file; `build.js` will need a small addition to do that.
-3. **Verify the API signature matches.** This is the most likely thing to
-   break. The code currently assumes the `argon2-browser` shape:
-   ```js
-   argon2.hash({ pass, salt, time, mem, parallelism, hashLen, type })
-   ```
-   `hash-wasm` uses different parameter names entirely (`password`,
-   `iterations`, `memorySize`, `hashLength`). Check yours and adjust
-   `deriveKey()` accordingly. Confirm `salt` is accepted as a `Uint8Array`
-   and that the returned `.hash` is a `Uint8Array` of 32 bytes.
-4. **Do not delete the PBKDF2 branch.** Vaults written today record
-   `kdf = 0x02` and must keep opening. The `parseHeader` check already
-   accepts both.
-5. **Benchmark on the oldest phone you care about**, not a flagship. Target
-   roughly one second to unlock. Start at m=64 MiB, t=3, p=1. If it is too
-   slow, **reduce iterations before reducing memory** — memory is the
-   security-relevant knob, and dropping it is what hands the GPU advantage
-   back.
+### Verification
 
-### Migrating existing vaults
+The vendored build was cross-checked against the Argon2 **reference
+implementation** (libargon2 via `argon2-cffi`) on a fixed input: both
+produce `f7b06f51…504c0`, byte for byte. That digest is now a
+known-answer test in `test.mjs`, so a vendor build that is present but
+subtly wrong — wrong variant, wrong version, parameters quietly ignored
+— fails loudly instead of writing vaults no other reader can open.
 
-Pleasantly, nothing special is needed. `encryptVault` falls back to
-`DEFAULT_PARAMS` when no params are passed, and the save path passes none.
-So once Argon2 is present: **unlock an old vault, hit save, and it is
-re-encrypted under Argon2id.** The new header records `kdf = 0x01`.
+### Migration
 
----
+Nothing special, as designed. `encryptVault` falls back to
+`DEFAULT_PARAMS` when passed none, and the save path passes none. So an
+old PBKDF2 vault opens, and the next save re-encrypts it under
+Argon2id with `kdf = 0x01`. The PBKDF2 branch stays in place for vaults
+that have not been re-saved yet. There is a test covering exactly this
+round trip.
+
+### Still to check on a real device
+
+- Timing on a mid-range Android phone (above)
+- That a 64 MiB WASM allocation actually succeeds on a low-RAM phone
+  and under iOS Safari's WASM memory limits — a failure here surfaces
+  as the unlock throwing rather than as a wrong answer, but it has not
+  been exercised in a real browser yet, only headlessly in Node
 
 ## 5. Code structure
 
 ```
 index.html          markup, and the script load order
 css/app.css         all styling
+vendor/…argon2…js   hash-wasm argon2 build, wasm inlined as base64
+js/argon2.js        adapter: vendor API -> window.argon2
 js/wordlist.js      EFF long list, 7776 words
 js/format.js        VLT1 header layout, build and parse
 js/crypto.js        key derivation, encrypt, decrypt
@@ -228,17 +226,17 @@ js/vault.js         decrypted model, entry ops, idle lock
 js/ui.js            DOM rendering only
 js/app.js           wiring
 build.js            inlines everything to dist/lockingvault.html
-test.mjs            16 headless checks
+test.mjs            24 headless checks
 README.md
 ```
 
 Each file attaches to a single `LV` global. **Load order matters** and is
-declared in `index.html`: `format` before `crypto`, `wordlist` before
-`generate`.
+declared in `index.html`: vendor and `argon2` before `crypto`, `format`
+before `crypto`, `wordlist` before `generate`.
 
 The split runs along what each part is permitted to touch. `ui.js` never
-sees a passphrase; `crypto.js` never sees a DOM element. The payoff is that
-the Argon2 swap is one function in one file.
+sees a passphrase; `crypto.js` never sees a DOM element. The payoff was that
+the Argon2 swap touched one new file and no existing logic.
 
 **Classic `<script>` tags, not ES modules.** This is deliberate: `import`
 is blocked over `file://` by CORS, so modules would mean running a local
@@ -306,27 +304,30 @@ fine, still no backend) rather than opened from `file://`. Not yet started.
 
 ## 9. Open work, in rough priority order
 
-1. **Argon2id swap** (section 4) — blocking for real use
-2. **Sync conflict handling.** Two devices that both decrypt and save will
-   silently overwrite each other, losing entries with no error. `revision`
-   in the payload increments on every save and is the hook for detecting
-   this, but nothing reads it yet. Google Drive exposes revision IDs for
-   the remote side. This was flagged early as the thing most likely to bite
-   in practice, ahead of anything cryptographic.
+1. ~~Argon2id swap~~ — done, see section 4. Remaining: time it on a
+   real mid-range phone and confirm the 64 MiB allocation succeeds
+   there.
+2. **Sync conflict handling.** Two devices that both decrypt and save
+   will silently overwrite each other, losing entries with no error.
+   `revision` in the payload increments on every save and is the hook
+   for detecting this, but nothing reads it yet. Google Drive exposes
+   revision IDs for the remote side. This was flagged early as the
+   thing most likely to bite in practice, ahead of anything
+   cryptographic — and with Argon2 done it is now the top risk.
 3. **Editing entries** — currently add and delete only
 4. Search / filter
 5. Import and export (competitor formats, CSV)
 6. Google Drive storage backend
 7. Readers for other platforms, to prove the format travels
 
----
-
 ## 10. Things to verify rather than trust
 
 - Entropy-to-cracking-time estimates throughout — sanity-check against
   current benchmarks before relying on them
-- The Argon2 WASM build's API signature against whatever build is chosen
-- Argon2 parameter timing on a real mid-range Android device
+- ~~The Argon2 WASM build's API signature~~ — done; cross-checked against
+  the reference implementation and pinned by a known-answer test
+- Argon2 parameter timing on a real mid-range Android device — still
+  outstanding, only measured on a Mac (~117 ms)
 - That the wordlist is still exactly 7776 unique entries if ever
   regenerated — a truncated or deduplicated list silently reduces entropy
   below the advertised 77.5 bits. `test.mjs` checks this.
@@ -339,12 +340,18 @@ fine, still no backend) rather than opened from `file://`. Not yet started.
 node test.mjs
 ```
 
-16 checks covering the wordlist, generation and index distribution,
-round-tripping with Unicode entries, whitespace and case tolerance, and
-rejection of wrong passphrases, downgraded KDF parameters, flipped
-ciphertext bits and corrupted magic bytes. They load the real source files,
-so they test what ships. All passing.
+24 checks covering the wordlist, generation and index distribution, the
+Argon2 reference vector, round-tripping with Unicode entries, whitespace
+and case tolerance, migration of an old PBKDF2 vault to Argon2id, and
+rejection of wrong passphrases, downgraded memory cost, a swapped KDF id,
+flipped ciphertext bits and corrupted magic bytes. They load the real
+source files, so they test what ships. All passing.
+
+Note: the downgrade test now strips the *memory* cost rather than raising
+the iteration count. Memory is the parameter an attacker actually wants
+to remove, and raising Argon2 iterations to 1000 would have made the test
+itself take minutes.
 
 ```bash
-node build.js    # -> dist/lockingvault.html, ~91 KB
+node build.js    # -> dist/lockingvault.html, ~122 KB
 ```

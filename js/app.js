@@ -80,14 +80,14 @@
 
   /* ---- creating a new vault ---- */
   $('b-new').onclick = function () {
-    candidate = G.passphrase(6);
+    candidate = G.passphrase();
     ui.renderPhrase(candidate);
     $('confirm').value = '';
     ui.showStage('new');
   };
 
   $('b-regen').onclick = function () {
-    candidate = G.passphrase(6);
+    candidate = G.passphrase();
     ui.renderPhrase(candidate);
     $('confirm').value = '';
   };

@@ -32,8 +32,9 @@ check('all unique', new Set(LV.WORDS).size === 7776);
 check('hyphenated words present', LV.WORDS.includes('t-shirt') && LV.WORDS.includes('yo-yo'));
 
 // generation
-const p = LV.generate.passphrase(6);
-check('passphrase is 6 words', p.length === 6);
+const p = LV.generate.passphrase();
+check('passphrase defaults to 8 words', LV.generate.WORD_COUNT === 8 && p.length === 8);
+check('entropy is 103 bits', Math.round(p.length * Math.log2(LV.WORDS.length)) === 103);
 check('words come from the list', p.every(w => LV.WORDS.includes(w)));
 const spread = new Set();
 for (let i = 0; i < 2000; i++) spread.add(LV.generate.secureIndex(7776));

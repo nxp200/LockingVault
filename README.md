@@ -68,10 +68,20 @@ can raise costs later and old vaults still open.
 
 ## Security notes
 
-The master passphrase is six words from the EFF long list, which is
-77.5 bits. The app generates it and will not accept one you invent,
+The master passphrase is eight words from the EFF long list, which is
+103.4 bits. The app generates it and will not accept one you invent,
 because a chosen phrase is worth a fraction of that against a cracker
 that knows how people choose words.
+
+Word count, not KDF cost, is the parameter that matters. Each word
+multiplies the search space by 7776; doubling the Argon2 memory cost
+merely doubles it. If the threat model ever grows, add a word — it
+costs nothing at unlock time and cannot lock you out of a device the
+way a larger memory cost can.
+
+The flip side is that there is no recovery. A phrase this strong is
+worthless if it is lost, and losing it is now the most likely way to
+lose the vault — far likelier than anyone breaking it.
 
 Four words in the list contain hyphens (`drop-down`, `felt-tip`,
 `t-shirt`, `yo-yo`). Words are therefore joined with spaces only, and
