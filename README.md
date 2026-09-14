@@ -15,7 +15,7 @@ open your own passwords.
 
 To make the portable version:
 
-    node build.js        # -> dist/lockingvault.html, one file, ~91 KB
+    node build.js        # -> dist/lockingvault.html, one file, ~122 KB
 
 The bundle is what you put on a phone. The split tree is what you
 edit.
@@ -24,6 +24,8 @@ edit.
 
     index.html          markup and script order
     css/app.css         all styling
+    vendor/             hash-wasm argon2 build, wasm inlined as base64
+    js/argon2.js        adapter: vendor API -> window.argon2
     js/wordlist.js      EFF long list, 7776 words
     js/format.js        VLT1 header layout, parse and build
     js/crypto.js        key derivation, encrypt, decrypt
@@ -36,8 +38,10 @@ edit.
     test.mjs            headless checks
 
 Each file attaches to a single `LV` global. Load order is declared in
-`index.html` and matters: `format` before `crypto`, `wordlist` before
-`generate`.
+`index.html` and matters: the vendor build and `js/argon2.js` before
+`crypto`, `format` before `crypto`, `wordlist` before `generate`.
+`crypto.js` decides at load time whether Argon2 is available, so
+anything arriving later is ignored.
 
 ## The file format
 
@@ -88,27 +92,44 @@ copied passwords are cleared from the clipboard after twenty seconds.
 Failed unlocks report one message whether the passphrase was wrong or
 the file was tampered with. Distinguishing them would leak.
 
-### The Argon2 gap
+### Key derivation
 
-Argon2id is what this format wants, and WebCrypto does not provide it.
-If `window.argon2` is present the app uses it; otherwise it falls back
-to PBKDF2-SHA256 at 600,000 iterations and says so on the lock screen.
+Argon2id at 64 MiB, 3 passes, parallelism 1. WebCrypto does not
+provide Argon2, so the app carries its own WASM build (hash-wasm) with
+the `.wasm` inlined as base64 — no fetch, which is what lets the whole
+thing run from `file://`.
 
-PBKDF2 is not memory-hard, so a GPU farm attacks it far more
-efficiently. Before trusting this with real passwords, inline an
-audited Argon2 WASM build and load it ahead of `js/crypto.js`. Vaults
-written now record `kdf = 2` and keep opening either way.
+`js/argon2.js` normalises that library to the `window.argon2.hash(...)`
+shape `crypto.js` expects. Swapping the vendor build later is a change
+to that one adapter.
 
-Benchmark the parameters on the oldest phone you care about. Aim for
-about one second to unlock.
+Memory cost is the security-relevant knob: it is what stops a GPU from
+running thousands of guesses in parallel, because each guess has to own
+64 MiB for its duration. If the parameters need to come down on a slow
+device, reduce iterations first and leave memory alone.
+
+If the vendor build is missing the app falls back to PBKDF2-SHA256 at
+600,000 iterations and says so on the lock screen. Vaults written under
+either KDF record which one they used and keep opening. An old PBKDF2
+vault migrates the moment you unlock it and save — the save path
+re-derives under the current defaults.
+
+The test suite includes a known-answer test against a digest produced
+by the Argon2 reference implementation, so a vendor build that is
+present but subtly wrong fails loudly rather than writing vaults no
+other reader can open.
+
+Benchmark on the oldest phone you care about, not a flagship, and aim
+for about a second to unlock.
 
 ## Tests
 
     node test.mjs
 
-Sixteen checks over the wordlist, generation, round-tripping with
-Unicode, whitespace tolerance, and rejection of wrong passphrases,
-downgraded KDF parameters, flipped ciphertext bits and corrupted
+Twenty-four checks over the wordlist, generation, the Argon2 reference
+vector, round-tripping with Unicode, whitespace tolerance, migration of
+an old PBKDF2 vault, and rejection of wrong passphrases, downgraded
+memory cost, a swapped KDF id, flipped ciphertext bits and corrupted
 magic. They load the real source files, so they test what ships.
 
 ## Not done yet

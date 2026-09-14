@@ -98,6 +98,11 @@
 <!-- Load order matters: each file attaches to window.LV and the next
      one uses it. Classic scripts, not modules, so this page still
      works when opened directly from disk over file://. -->
+<!-- Argon2id is not in WebCrypto, so the app brings its own WASM build.
+     Both must load before js/crypto.js, which decides at load time
+     whether Argon2 is available. -->
+<script src="vendor/hash-wasm-argon2.umd.min.js"></script>
+<script src="js/argon2.js"></script>
 <script src="js/wordlist.js"></script>
 <script src="js/format.js"></script>
 <script src="js/crypto.js"></script>
