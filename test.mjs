@@ -8,7 +8,7 @@ import vm from 'node:vm';
 
 // In a browser, window IS the global object, so `window.LV = ...` also
 // defines a bare `LV`. Point window at the sandbox itself to match.
-const sandbox = { crypto: webcrypto, TextEncoder, TextDecoder, console };
+const sandbox = { crypto: webcrypto, TextEncoder, TextDecoder, console, setTimeout, clearTimeout };
 sandbox.window = sandbox;
 vm.createContext(sandbox);
 
@@ -18,7 +18,7 @@ vm.createContext(sandbox);
 vm.runInContext(readFileSync('vendor/hash-wasm-argon2.umd.min.js', 'utf8'),
   sandbox, { filename: 'argon2-wasm' });
 
-for (const f of ['argon2', 'wordlist', 'format', 'crypto', 'generate']) {
+for (const f of ['argon2', 'wordlist', 'format', 'crypto', 'generate', 'vault']) {
   vm.runInContext(readFileSync(`js/${f}.js`, 'utf8'), sandbox, { filename: f });
 }
 const LV = sandbox.LV;
@@ -61,6 +61,24 @@ const kat = await sandbox.window.argon2.hash({
 });
 check('matches the argon2 reference implementation',
   Buffer.from(kat.hash).toString('hex') === KAT);
+
+// entry model: add, edit, delete
+LV.vault.create(['a','b','c','d','e','f','g','h']);
+LV.vault.addEntry({ title: 'GitHub', username: 'nam', secret: 'first', url: 'https://github.com' });
+const e0 = LV.vault.entries()[0];
+check('addEntry stores the fields', e0.title === 'GitHub' && e0.secret === 'first' && e0.notes === '' );
+
+const ok = LV.vault.updateEntry(e0.id, { title: 'GitHub (work)', username: 'nam2', secret: 'second', url: '' });
+const e1 = LV.vault.entries()[0];
+check('updateEntry rewrites the fields',
+  ok === true && e1.title === 'GitHub (work)' && e1.secret === 'second' && e1.username === 'nam2' && e1.url === '');
+check('updateEntry keeps id and created', e1.id === e0.id && e1.created === e0.created);
+check('updateEntry does not add an entry', LV.vault.entries().length === 1);
+check('updateEntry rejects an unknown id', LV.vault.updateEntry('no-such-id', { title: 'x' }) === false);
+
+LV.vault.removeEntry(e1.id);
+check('removeEntry drops it', LV.vault.entries().length === 0);
+LV.vault.lock();
 
 // crypto round trip
 const phrase = 'trombone wildcat abacus yo-yo t-shirt rekindle';

@@ -96,7 +96,9 @@ A fresh 12-byte nonce is generated on every save. Reusing one with the
 same key breaks AES-GCM badly.
 
 Plaintext exists only in memory. There is no localStorage, no
-IndexedDB, no cache. The vault locks after three minutes idle, and
+IndexedDB, no cache. Locking also clears the rendered DOM — the entry
+list, the passphrase box and the entry sheet — because dropping the
+model alone leaves the last render sitting in the document. The vault locks after three minutes idle, and
 copied passwords are cleared from the clipboard after twenty seconds.
 
 Failed unlocks report one message whether the passphrase was wrong or
@@ -136,9 +138,9 @@ for about a second to unlock.
 
     node test.mjs
 
-Twenty-four checks over the wordlist, generation, the Argon2 reference
+Thirty-one checks over the wordlist, generation, the Argon2 reference
 vector, round-tripping with Unicode, whitespace tolerance, migration of
-an old PBKDF2 vault, and rejection of wrong passphrases, downgraded
+an old PBKDF2 vault, the entry add/edit/delete model, and rejection of wrong passphrases, downgraded
 memory cost, a swapped KDF id, flipped ciphertext bits and corrupted
 magic. They load the real source files, so they test what ships.
 
@@ -148,4 +150,5 @@ Sync conflict handling. Two devices that both decrypt and save will
 silently overwrite each other. `revision` in the payload increments on
 every save and is the hook for detecting it, but nothing reads it yet.
 
-Editing entries, search, and import or export are also absent.
+Search and import/export are also absent. Entries can be added, edited
+and deleted.

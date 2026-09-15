@@ -61,11 +61,14 @@ textarea{resize:vertical;min-height:74px;line-height:1.7}
 }
 
 /* ---------- passphrase reveal ---------- */
+/* One flowing line of words. Lines break between words only — never
+   inside one, because a phrase transcribed from "stonewal / l" will
+   not open the vault. */
 .phrase{
   background:var(--panel);border:1px solid var(--edge);border-radius:10px;padding:16px;
   font-family:var(--mono);font-size:17px;line-height:1.9;word-spacing:.35em;
 }
-.phrase b{font-weight:400;color:var(--cyan)}
+.phrase b{font-weight:400;color:var(--cyan);white-space:nowrap}
 
 /* ---------- vault state ---------- */
 #vault{flex:1;display:none;flex-direction:column}
@@ -109,11 +112,15 @@ textarea{resize:vertical;min-height:74px;line-height:1.7}
   display:flex;flex-direction:column;gap:14px;max-height:92vh;overflow:auto}
 .sheet h2{margin:0;font-size:18px;font-weight:620}
 
-.toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);
+/* top is overwritten by ui.toast() so the toast clears the sticky top
+   bar when the vault is open; 22px is the resting value it uses when
+   there is no bar. Note the transform carries the horizontal centring,
+   so the slide-in has to repeat translateX(-50%). */
+.toast{position:fixed;left:50%;top:22px;transform:translateX(-50%) translateY(-8px);
   background:var(--panel);border:1px solid var(--edge);border-radius:9px;
   padding:10px 16px;font-size:14px;z-index:20;opacity:0;pointer-events:none;
-  transition:opacity .2s}
-.toast.on{opacity:1}
+  transition:opacity .2s,transform .2s;max-width:calc(100% - 36px);text-align:center}
+.toast.on{opacity:1;transform:translateX(-50%) translateY(0)}
 
 .fade{transition:opacity .45s ease,transform .45s ease}
 @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
@@ -160,7 +167,7 @@ textarea{resize:vertical;min-height:74px;line-height:1.7}
       <div class="phrase" id="gen" style="margin:14px 0"></div>
       <div class="row">
         <button class="btn ghost slim" id="b-regen">Generate another</button>
-        <button class="btn ghost slim" id="b-copyphrase">Copy</button>
+        <button class="btn ghost slim" id="b-copyphrase">Copy passphrase</button>
       </div>
       <div class="field" style="margin-top:16px">
         <label for="confirm">Type it back to confirm</label>
@@ -193,7 +200,7 @@ textarea{resize:vertical;min-height:74px;line-height:1.7}
 <!-- ============ ADD SHEET ============ -->
 <div class="sheet" id="sheet">
   <div class="inner">
-    <h2>New entry</h2>
+    <h2 id="sheet-title">New entry</h2>
     <div class="field"><label for="e-title">Name</label><input id="e-title" type="text" placeholder="GitHub"></div>
     <div class="field"><label for="e-user">Username</label><input id="e-user" type="text" autocapitalize="none"></div>
     <div class="field"><label for="e-secret">Password</label><input id="e-secret" type="text" autocapitalize="none" spellcheck="false"></div>
@@ -660,6 +667,21 @@ LV.vault = (function () {
     touch();
   }
 
+  // Same field handling as addEntry, so an entry written by one path
+  // is shaped identically to one written by the other. created and id
+  // are preserved; updated moves.
+  function updateEntry(id, fields) {
+    const entry = data.entries.find(function (e) { return e.id === id; });
+    if (!entry) return false;
+    entry.title = fields.title;
+    entry.username = fields.username || '';
+    entry.secret = fields.secret || '';
+    entry.url = fields.url || '';
+    entry.updated = new Date().toISOString();
+    touch();
+    return true;
+  }
+
   function removeEntry(id) {
     data.entries = data.entries.filter(function (e) { return e.id !== id; });
     touch();
@@ -674,7 +696,7 @@ LV.vault = (function () {
 
   return {
     IDLE_MS, isOpen, get, entries,
-    create, adopt, lock, addEntry, removeEntry, bumpRevision, resetIdle,
+    create, adopt, lock, addEntry, updateEntry, removeEntry, bumpRevision, resetIdle,
     setPending: function (b) { pending = b; },
     getPending: function () { return pending; },
     getPhrase: function () { return phrase; },
@@ -690,11 +712,24 @@ LV.vault = (function () {
 window.LV = window.LV || {};
 
 LV.ui = (function () {
+  const TOAST_GAP = 22; // matches the toast's resting offset in app.css
+
   const $ = function (id) { return document.getElementById(id); };
 
   function toast(text) {
     const t = $('toast');
     t.textContent = text;
+
+    // Sit below the sticky top bar rather than on top of it, so the
+    // toast never covers the add and lock buttons. The bar only exists
+    // in the unlocked state and its offsetParent is null while hidden,
+    // so the sealed screen keeps the toast at the top of the viewport.
+    const bar = document.querySelector('.bar');
+    const drop = (bar && bar.offsetParent !== null)
+      ? Math.round(bar.getBoundingClientRect().height)
+      : 0;
+    t.style.top = (drop + TOAST_GAP) + 'px';
+
     t.classList.add('on');
     clearTimeout(t._t);
     t._t = setTimeout(function () { t.classList.remove('on'); }, 1900);
@@ -707,6 +742,17 @@ LV.ui = (function () {
   }
 
   function showSealed() {
+    // Locking drops the decrypted model, but the DOM keeps whatever was
+    // last rendered from it. Without this the entry list still holds
+    // every plaintext secret after an idle lock — hidden, but sitting in
+    // the document — and the generated passphrase likewise. Clear both
+    // so "plaintext lives in memory only" stays true of the page too.
+    closeSheet();
+    $('list').innerHTML = '';
+    $('gen').innerHTML = '';
+    $('n').textContent = '0';
+    $('nlabel').textContent = 'entries';
+
     $('vault').style.display = 'none';
     $('seal').style.display = 'flex';
     document.body.classList.remove('open');
@@ -728,7 +774,7 @@ LV.ui = (function () {
     box.innerHTML = '';
     words.forEach(function (w, i) {
       const b = document.createElement('b');
-      b.textContent = w;
+      b.textContent = w; // textContent, never innerHTML
       box.appendChild(b);
       if (i < words.length - 1) box.appendChild(document.createTextNode(' '));
     });
@@ -781,6 +827,10 @@ LV.ui = (function () {
       copy.textContent = 'Copy';
       copy.onclick = function () { handlers.copy(entry); };
 
+      const edit = document.createElement('button');
+      edit.textContent = 'Edit';
+      edit.onclick = function () { handlers.edit(entry); };
+
       const del = document.createElement('button');
       del.className = 'del';
       del.textContent = 'Delete';
@@ -788,19 +838,36 @@ LV.ui = (function () {
 
       acts.appendChild(reveal);
       acts.appendChild(copy);
+      acts.appendChild(edit);
       acts.appendChild(del);
       el.appendChild(acts);
       list.appendChild(el);
     });
   }
 
-  function openSheet() {
-    ['e-title', 'e-user', 'e-secret', 'e-url'].forEach(function (id) { $(id).value = ''; });
+  // One sheet serves both adding and editing. Pass an entry to load it
+  // for editing, or nothing to start a blank one — same fields, same
+  // save button, only the labels differ.
+  const SHEET_FIELDS = {
+    'e-title': 'title', 'e-user': 'username', 'e-secret': 'secret', 'e-url': 'url'
+  };
+
+  function openSheet(entry) {
+    Object.keys(SHEET_FIELDS).forEach(function (id) {
+      $(id).value = entry ? (entry[SHEET_FIELDS[id]] || '') : '';
+    });
+    $('sheet-title').textContent = entry ? 'Edit entry' : 'New entry';
+    $('b-save-entry').textContent = entry ? 'Save changes' : 'Add entry';
     $('sheet').classList.add('on');
     $('e-title').focus();
   }
 
-  function closeSheet() { $('sheet').classList.remove('on'); }
+  function closeSheet() {
+    // Clear the fields on the way out. They hold a plaintext secret,
+    // and the sheet can be closed by the vault locking underneath it.
+    Object.keys(SHEET_FIELDS).forEach(function (id) { $(id).value = ''; });
+    $('sheet').classList.remove('on');
+  }
 
   function setBuildInfo(hasArgon2) {
     $('verline').textContent = hasArgon2 ? 'VLT1 · argon2id' : 'VLT1 · pbkdf2';
@@ -826,7 +893,20 @@ LV.ui = (function () {
   const $ = ui.$;
 
   let candidate = [];           // generated passphrase awaiting confirmation
+  let editingId = null;         // entry open in the sheet, or null when adding
   const CLIPBOARD_CLEAR_MS = 20000;
+
+  // Both the + button and an entry's Edit button come through here, so
+  // the sheet's state and the model's are set in one place.
+  function openEntrySheet(entry) {
+    editingId = entry ? entry.id : null;
+    ui.openSheet(entry);
+  }
+
+  function closeEntrySheet() {
+    editingId = null;
+    ui.closeSheet();
+  }
 
   function refresh() {
     ui.renderEntries(V.entries(), {
@@ -840,6 +920,9 @@ LV.ui = (function () {
         } catch (e) {
           ui.toast('Clipboard blocked by the browser');
         }
+      },
+      edit: function (entry) {
+        openEntrySheet(entry);
       },
       remove: function (entry) {
         V.removeEntry(entry.id);
@@ -856,6 +939,7 @@ LV.ui = (function () {
   }
 
   function lock(message) {
+    editingId = null;
     V.lock();
     ui.showSealed();
     if (message) ui.toast(message);
@@ -915,7 +999,7 @@ LV.ui = (function () {
   $('b-copyphrase').onclick = async function () {
     try {
       await navigator.clipboard.writeText(candidate.join(' '));
-      ui.toast('Copied');
+      ui.toast('Passphrase copied. Paste it somewhere safe now.');
     } catch (e) {
       ui.toast('Clipboard blocked by the browser');
     }
@@ -945,22 +1029,37 @@ LV.ui = (function () {
   };
 
   /* ---- entries ---- */
-  $('b-add').onclick = ui.openSheet;
-  $('b-cancel').onclick = ui.closeSheet;
+  $('b-add').onclick = function () { openEntrySheet(null); };
+  $('b-cancel').onclick = closeEntrySheet;
   $('b-genpw').onclick = function () { $('e-secret').value = G.password(20); };
 
   $('b-save-entry').onclick = function () {
     const title = $('e-title').value.trim();
     if (!title) { $('e-title').focus(); ui.toast('Give the entry a name'); return; }
-    V.addEntry({
+
+    const fields = {
       title: title,
       username: $('e-user').value.trim(),
       secret: $('e-secret').value,
       url: $('e-url').value.trim()
-    });
-    ui.closeSheet();
+    };
+
+    const wasEdit = editingId !== null;
+    if (wasEdit) {
+      // The vault can lock while the sheet is open, which drops the
+      // model. An id that no longer resolves means the edit is stale.
+      if (!V.isOpen() || !V.updateEntry(editingId, fields)) {
+        closeEntrySheet();
+        ui.toast('That entry is no longer there');
+        return;
+      }
+    } else {
+      V.addEntry(fields);
+    }
+
+    closeEntrySheet();
     refresh();
-    ui.toast('Added. Save to keep the change.');
+    ui.toast(wasEdit ? 'Updated. Save to keep the change.' : 'Added. Save to keep the change.');
   };
 
   /* ---- saving and locking ---- */
@@ -985,6 +1084,7 @@ LV.ui = (function () {
 
   /* ---- idle handling ---- */
   V.onIdleLock(function () {
+    editingId = null;
     ui.showSealed();
     ui.toast('Locked after 3 minutes idle');
   });

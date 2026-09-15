@@ -53,11 +53,14 @@ textarea{resize:vertical;min-height:74px;line-height:1.7}
 }
 
 /* ---------- passphrase reveal ---------- */
+/* One flowing line of words. Lines break between words only — never
+   inside one, because a phrase transcribed from "stonewal / l" will
+   not open the vault. */
 .phrase{
   background:var(--panel);border:1px solid var(--edge);border-radius:10px;padding:16px;
   font-family:var(--mono);font-size:17px;line-height:1.9;word-spacing:.35em;
 }
-.phrase b{font-weight:400;color:var(--cyan)}
+.phrase b{font-weight:400;color:var(--cyan);white-space:nowrap}
 
 /* ---------- vault state ---------- */
 #vault{flex:1;display:none;flex-direction:column}
@@ -101,11 +104,15 @@ textarea{resize:vertical;min-height:74px;line-height:1.7}
   display:flex;flex-direction:column;gap:14px;max-height:92vh;overflow:auto}
 .sheet h2{margin:0;font-size:18px;font-weight:620}
 
-.toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);
+/* top is overwritten by ui.toast() so the toast clears the sticky top
+   bar when the vault is open; 22px is the resting value it uses when
+   there is no bar. Note the transform carries the horizontal centring,
+   so the slide-in has to repeat translateX(-50%). */
+.toast{position:fixed;left:50%;top:22px;transform:translateX(-50%) translateY(-8px);
   background:var(--panel);border:1px solid var(--edge);border-radius:9px;
   padding:10px 16px;font-size:14px;z-index:20;opacity:0;pointer-events:none;
-  transition:opacity .2s}
-.toast.on{opacity:1}
+  transition:opacity .2s,transform .2s;max-width:calc(100% - 36px);text-align:center}
+.toast.on{opacity:1;transform:translateX(-50%) translateY(0)}
 
 .fade{transition:opacity .45s ease,transform .45s ease}
 @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}

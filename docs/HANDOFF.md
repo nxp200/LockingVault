@@ -52,11 +52,16 @@ because it will come up again:
 | 8 chars, random | ~53 bits | Decades, but erodes with hardware. Thin. |
 | 12 chars, human-chosen | ~30–40 bits | Hours to years. Rejected. |
 | 12 chars, random | ~79 bits | Sound, but painful to type on a phone. |
-| **6-word diceware** | **77.5 bits** | **Chosen.** |
+| 6-word diceware | 77.5 bits | Chosen originally. |
+| **8-word diceware** | **103.4 bits** | **Current, raised 2026-09-14.** |
 
-Six words from the EFF long list (7776 words) gives 7776⁶ ≈ 2⁷⁷·⁵. That is
-statistically equivalent to random 12 characters, far easier to remember,
+Each word from the EFF long list (7776 words) is log2(7776) = 12.925 bits.
+Six words gave 77.5 bits; the default is now **eight words, 103.4 bits**.
+Diceware is far easier to remember than the equivalent random characters
 and much harder to fat-finger on a phone keyboard.
+
+`LV.generate.WORD_COUNT` in `js/generate.js` is the single place this is
+set.
 
 The critical insight, worth restating because it is counterintuitive: the
 *character count is not the security parameter*. `Sydney2024!` and a random
@@ -65,6 +70,54 @@ crackers model how humans choose. This is why **the app generates the
 passphrase and does not accept a user-supplied one.** A password manager
 can reasonably insist on this, since the master secret is the only one the
 user ever has to memorise.
+
+### Word count vs KDF cost — which lever to pull
+
+This came up when the Argon2 parameters were raised and is the most
+useful rule in the project:
+
+**The KDF is a constant factor. The passphrase is an exponent.**
+
+Argon2id at 64 MiB costs a GPU attacker roughly 20x more per guess than
+PBKDF2-600k (much more against ASICs, which can't etch their way out of
+needing real DRAM). That is a real and worthwhile gain, but it is a
+multiplier. One extra diceware word multiplies the search space by 7776.
+
+So: doubling Argon2 memory buys +1 bit and costs unlock time on every
+device forever. Adding a word buys +12.9 bits and costs nothing at
+unlock. If the threat model grows, **add words, don't raise memory.**
+
+Raising memory also carries a real downside that word count does not.
+Parameters are baked into each vault file permanently, so a vault written
+at 512 MiB may fail to allocate on an older phone or under iOS Safari,
+and is then unopenable *on that device, forever*. Too-high parameters
+can cost you access; too-low parameters still leave the vault
+astronomically out of reach.
+
+### A correction to the physics framing above
+
+"2²⁵⁶ is beyond physics" is true — the Landauer floor for 2²⁵⁶ bit flips
+is ~10⁵⁶ J. But that argument does **not** extend to the passphrase. The
+Landauer floor for 2⁷⁷·⁵ is about **600 joules**, which is nothing.
+
+What actually protects the passphrase is that a real Argon2id guess at
+64 MiB costs on the order of 0.45 J, not 10⁻²¹ J. Exhausting a 6-word
+space that way needs roughly 80x the world's total annual energy output;
+at 8 words it is ~10⁶ times that again. The protection is economic and
+engineering, not thermodynamic. Worth keeping straight when reasoning
+about the far future.
+
+> These are order-of-magnitude estimates derived from GPU memory
+> bandwidth. Sanity-check against current hashcat Argon2 benchmarks
+> before using any figure publicly.
+
+### The real residual risk
+
+At 103 bits nobody is brute-forcing this. The realistic ways to lose the
+vault are, in order: losing or forgetting the passphrase (no recovery by
+design), a compromised device reading plaintext out of memory or the
+clipboard, and the sync-overwrite bug in section 9. Effort is better
+spent there than on further KDF tuning.
 
 A password + keyfile scheme was considered as an alternative (small random
 file stored separately from the vault, both needed to decrypt). Rejected as
@@ -177,11 +230,18 @@ which reads `window.argon2` at load time.
 ### Parameters
 
 m = 64 MiB, t = 3, p = 1, 32-byte output — the existing
-`DEFAULT_PARAMS`, unchanged. Measured at **~117 ms per derivation** on
-Nam's Mac. That is well under the ~1 s target, but the Mac is not the
+`DEFAULT_PARAMS`, deliberately left alone (see section 2 for why word
+count was raised instead).
+
+**`p` > 1 does nothing in this build.** Measured at p = 1, 2 and 4:
+identical timings. hash-wasm computes lanes serially, so raising
+parallelism buys no speed and merely splits the memory across lanes.
+Keep it at 1. Measured at **~117 ms per derivation** on
+Nam's Mac, and reported as instant on a Galaxy Fold 7. That is well under the ~1 s target, but the Mac is not the
 constraint: a mid-range Android phone in a browser will be several
 times slower and is where this has to be timed. **Not yet measured on a
-phone.** If it has to come down there, reduce iterations and leave
+mid-range phone** — the Fold 7 is a flagship and says little about
+weaker devices. If it has to come down there, reduce iterations and leave
 memory alone — memory is what removes the GPU advantage.
 
 ### Verification
@@ -226,7 +286,7 @@ js/vault.js         decrypted model, entry ops, idle lock
 js/ui.js            DOM rendering only
 js/app.js           wiring
 build.js            inlines everything to dist/lockingvault.html
-test.mjs            24 headless checks
+test.mjs            31 headless checks
 README.md
 ```
 
@@ -247,7 +307,8 @@ produces the single-file bundle for moving onto a phone.
 
 ## 6. Runtime security properties already implemented
 
-- Plaintext exists in memory only — no localStorage, no IndexedDB, no cache
+- Plaintext exists in memory only — no localStorage, no IndexedDB, no
+  cache — and locking clears the rendered DOM as well as the model
 - Vault auto-locks after 3 minutes idle
 - Copied passwords cleared from clipboard after 20 seconds
 - Failed unlock reports **one** message whether the passphrase was wrong or
@@ -266,6 +327,24 @@ produces the single-file bundle for moving onto a phone.
 `yo-yo`. This permanently rules out hyphen-as-separator in passphrases.
 Words are joined with spaces only. Found before it could corrupt anyone's
 ability to open a vault.
+
+**Locking must clear the DOM, not just the model.** `vault.lock()`
+drops the decrypted payload, but the page keeps whatever was last
+rendered from it — after an idle lock the entry list still held every
+plaintext secret, hidden behind `display:none` but sitting in the
+document, and the generated passphrase likewise. `showSealed()` now
+clears the list, the passphrase box and the entry sheet's fields. Found
+by asserting `document.body.innerHTML` no longer contains a known secret
+after locking; worth re-asserting whenever a new surface renders
+plaintext.
+
+**A passphrase word must never wrap mid-word.** A numbered 4x2 grid was
+tried and rejected — it broke `stonewall` into `stonewal` / `l` on a
+360px screen, and a phrase transcribed from that does not open the
+vault. The display is one flowing line of words, as originally built,
+with `white-space: nowrap` on each word so lines can only break between
+words. Verified headlessly with Playwright at 320/360/412/520px using
+the longest words in the list.
 
 **Padding must be computed on UTF-8 byte length, not JS string length.**
 The first implementation used string length; non-ASCII entries then broke
@@ -314,7 +393,9 @@ fine, still no backend) rather than opened from `file://`. Not yet started.
    revision IDs for the remote side. This was flagged early as the
    thing most likely to bite in practice, ahead of anything
    cryptographic — and with Argon2 done it is now the top risk.
-3. **Editing entries** — currently add and delete only
+3. ~~Editing entries~~ — done. One sheet serves both adding and
+   editing; `LV.vault.updateEntry(id, fields)` mirrors `addEntry`'s
+   field handling and preserves `id` and `created`.
 4. Search / filter
 5. Import and export (competitor formats, CSV)
 6. Google Drive storage backend
@@ -340,9 +421,9 @@ fine, still no backend) rather than opened from `file://`. Not yet started.
 node test.mjs
 ```
 
-24 checks covering the wordlist, generation and index distribution, the
+31 checks covering the wordlist, generation and index distribution, the
 Argon2 reference vector, round-tripping with Unicode entries, whitespace
-and case tolerance, migration of an old PBKDF2 vault to Argon2id, and
+and case tolerance, migration of an old PBKDF2 vault to Argon2id, the entry model's add/edit/delete paths, and
 rejection of wrong passphrases, downgraded memory cost, a swapped KDF id,
 flipped ciphertext bits and corrupted magic bytes. They load the real
 source files, so they test what ships. All passing.

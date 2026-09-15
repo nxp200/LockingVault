@@ -66,6 +66,21 @@ LV.vault = (function () {
     touch();
   }
 
+  // Same field handling as addEntry, so an entry written by one path
+  // is shaped identically to one written by the other. created and id
+  // are preserved; updated moves.
+  function updateEntry(id, fields) {
+    const entry = data.entries.find(function (e) { return e.id === id; });
+    if (!entry) return false;
+    entry.title = fields.title;
+    entry.username = fields.username || '';
+    entry.secret = fields.secret || '';
+    entry.url = fields.url || '';
+    entry.updated = new Date().toISOString();
+    touch();
+    return true;
+  }
+
   function removeEntry(id) {
     data.entries = data.entries.filter(function (e) { return e.id !== id; });
     touch();
@@ -80,7 +95,7 @@ LV.vault = (function () {
 
   return {
     IDLE_MS, isOpen, get, entries,
-    create, adopt, lock, addEntry, removeEntry, bumpRevision, resetIdle,
+    create, adopt, lock, addEntry, updateEntry, removeEntry, bumpRevision, resetIdle,
     setPending: function (b) { pending = b; },
     getPending: function () { return pending; },
     getPhrase: function () { return phrase; },

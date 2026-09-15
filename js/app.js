@@ -6,7 +6,20 @@
   const $ = ui.$;
 
   let candidate = [];           // generated passphrase awaiting confirmation
+  let editingId = null;         // entry open in the sheet, or null when adding
   const CLIPBOARD_CLEAR_MS = 20000;
+
+  // Both the + button and an entry's Edit button come through here, so
+  // the sheet's state and the model's are set in one place.
+  function openEntrySheet(entry) {
+    editingId = entry ? entry.id : null;
+    ui.openSheet(entry);
+  }
+
+  function closeEntrySheet() {
+    editingId = null;
+    ui.closeSheet();
+  }
 
   function refresh() {
     ui.renderEntries(V.entries(), {
@@ -20,6 +33,9 @@
         } catch (e) {
           ui.toast('Clipboard blocked by the browser');
         }
+      },
+      edit: function (entry) {
+        openEntrySheet(entry);
       },
       remove: function (entry) {
         V.removeEntry(entry.id);
@@ -36,6 +52,7 @@
   }
 
   function lock(message) {
+    editingId = null;
     V.lock();
     ui.showSealed();
     if (message) ui.toast(message);
@@ -95,7 +112,7 @@
   $('b-copyphrase').onclick = async function () {
     try {
       await navigator.clipboard.writeText(candidate.join(' '));
-      ui.toast('Copied');
+      ui.toast('Passphrase copied. Paste it somewhere safe now.');
     } catch (e) {
       ui.toast('Clipboard blocked by the browser');
     }
@@ -125,22 +142,37 @@
   };
 
   /* ---- entries ---- */
-  $('b-add').onclick = ui.openSheet;
-  $('b-cancel').onclick = ui.closeSheet;
+  $('b-add').onclick = function () { openEntrySheet(null); };
+  $('b-cancel').onclick = closeEntrySheet;
   $('b-genpw').onclick = function () { $('e-secret').value = G.password(20); };
 
   $('b-save-entry').onclick = function () {
     const title = $('e-title').value.trim();
     if (!title) { $('e-title').focus(); ui.toast('Give the entry a name'); return; }
-    V.addEntry({
+
+    const fields = {
       title: title,
       username: $('e-user').value.trim(),
       secret: $('e-secret').value,
       url: $('e-url').value.trim()
-    });
-    ui.closeSheet();
+    };
+
+    const wasEdit = editingId !== null;
+    if (wasEdit) {
+      // The vault can lock while the sheet is open, which drops the
+      // model. An id that no longer resolves means the edit is stale.
+      if (!V.isOpen() || !V.updateEntry(editingId, fields)) {
+        closeEntrySheet();
+        ui.toast('That entry is no longer there');
+        return;
+      }
+    } else {
+      V.addEntry(fields);
+    }
+
+    closeEntrySheet();
     refresh();
-    ui.toast('Added. Save to keep the change.');
+    ui.toast(wasEdit ? 'Updated. Save to keep the change.' : 'Added. Save to keep the change.');
   };
 
   /* ---- saving and locking ---- */
@@ -165,6 +197,7 @@
 
   /* ---- idle handling ---- */
   V.onIdleLock(function () {
+    editingId = null;
     ui.showSealed();
     ui.toast('Locked after 3 minutes idle');
   });
